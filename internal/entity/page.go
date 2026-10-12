@@ -19,7 +19,11 @@ type Page struct {
 	Key string `gorm:"index;size:255"` // Page key
 
 	Title     string
-	AdminOnly bool
+	// TitleVersion is bumped whenever the admin manually changes the title.
+	// Batch page-fetch jobs snapshot it so a late fetch result can detect the
+	// manual change and refuse to overwrite it.
+	TitleVersion int
+	AdminOnly    bool
 
 	SiteName string `gorm:"index;size:255"`
 

@@ -1,6 +1,8 @@
 package dao
 
 import (
+	"sync"
+
 	"gorm.io/gorm"
 )
 
@@ -16,6 +18,10 @@ type Dao struct {
 	// As the cache could be nil.
 	// Therefore, it is necessary to check if the cache is not nil before referencing it.
 	cache *DaoCache
+
+	// In-process coordination for persisted batch page-fetch jobs
+	pageFetchScopeLocks sync.Map // scope string -> *sync.Mutex
+	pageFetchJobRunners sync.Map // jobID uint -> struct{}
 }
 
 // Create new dao instance

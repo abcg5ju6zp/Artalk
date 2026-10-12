@@ -465,15 +465,43 @@ export interface HandlerResponsePageFetch {
   vote_up: number
 }
 
-export interface HandlerResponsePageFetchStatus {
-  /** The number of pages that have been fetched */
-  done: number
-  /** If the task is in progress */
+export interface HandlerResponsePageFetchJobItem {
+  /** Failure reason */
+  error: string
+  /** Extracted title */
+  title: string
+  /** Number of fetch attempts */
+  attempts: number
+  /** A redirect was followed */
+  redirected: boolean
+  /** Final URL after redirects */
+  final_url: string
+  id: number
+  page_id: number
+  page_key: string
+  /** Publish time */
+  published_at?: string
+  /** Why the late result was skipped */
+  skip_reason: string
+  site_name: string
+  /** pending | processing | success | failed | skipped */
+  status: string
+}
+
+export interface HandlerResponsePageFetchJob {
+  created_at: string
+  failed: number
+  id: number
   is_progress: boolean
-  /** The message of the task status */
-  msg: string
-  /** The total number of pages */
+  items: HandlerResponsePageFetchJobItem[]
+  remaining: number
+  /** Status of the job: running | completed */
+  status: string
+  site_name: string
+  skipped: number
+  success: number
   total: number
+  updated_at: string
 }
 
 export interface HandlerResponsePageList {
@@ -1599,12 +1627,7 @@ export class Api<SecurityDataType extends unknown> extends HttpClient<SecurityDa
 })` Internal Server Error
  */
     fetchAllPages: (options: HandlerParamsPageFetchAll, params: RequestParams = {}) =>
-      this.request<
-        HandlerMap,
-        HandlerMap & {
-          msg?: string
-        }
-      >({
+      this.request<HandlerResponsePageFetchJob, any>({
         path: `/pages/fetch`,
         method: 'POST',
         body: options,
@@ -1615,19 +1638,80 @@ export class Api<SecurityDataType extends unknown> extends HttpClient<SecurityDa
       }),
 
     /**
-     * @description Get the status of the task of fetching all pages
+     * @description Get the detail (counts and per-page results) of a page fetch job
      *
      * @tags Page
-     * @name GetPageFetchStatus
-     * @summary Get Pages Fetch Status
-     * @request GET:/pages/fetch/status
+     * @name GetPageFetchJob
+     * @summary Get Page Fetch Job
+     * @request GET:/pages/fetch/jobs/{id}
      * @secure
-     * @response `200` `HandlerResponsePageFetchStatus` OK
+     * @response `200` `HandlerResponsePageFetchJob` OK
+     * @response `404` `(HandlerMap & {
+    msg?: string,
+
+})` Not Found
+     * @response `500` `(HandlerMap & {
+    msg?: string,
+
+})` Internal Server Error
      */
-    getPageFetchStatus: (params: RequestParams = {}) =>
-      this.request<HandlerResponsePageFetchStatus, any>({
-        path: `/pages/fetch/status`,
+    getPageFetchJob: (id: number, params: RequestParams = {}) =>
+      this.request<HandlerResponsePageFetchJob, any>({
+        path: `/pages/fetch/jobs/${id}`,
         method: 'GET',
+        secure: true,
+        format: 'json',
+        ...params,
+      }),
+
+    /**
+     * @description Get the most recent page fetch job for a site scope
+     *
+     * @tags Page
+     * @name GetLatestPageFetchJob
+     * @summary Get Latest Page Fetch Job
+     * @request GET:/pages/fetch/jobs/latest
+     * @secure
+     * @response `200` `HandlerResponsePageFetchJob` OK
+     * @response `500` `(HandlerMap & {
+    msg?: string,
+
+})` Internal Server Error
+     */
+    getLatestPageFetchJob: (siteName?: string, params: RequestParams = {}) =>
+      this.request<HandlerResponsePageFetchJob | null, any>({
+        path: `/pages/fetch/jobs/latest`,
+        method: 'GET',
+        query: {
+          site_name: siteName,
+        },
+        secure: true,
+        format: 'json',
+        ...params,
+      }),
+
+    /**
+     * @description Resume a finished page fetch job, retrying only its failed items
+     *
+     * @tags Page
+     * @name RetryFailedPageFetchJob
+     * @summary Retry Failed Items of a Page Fetch Job
+     * @request POST:/pages/fetch/jobs/{id}/retry
+     * @secure
+     * @response `200` `HandlerResponsePageFetchJob` OK
+     * @response `404` `(HandlerMap & {
+    msg?: string,
+
+})` Not Found
+     * @response `500` `(HandlerMap & {
+    msg?: string,
+
+})` Internal Server Error
+     */
+    retryFailedPageFetchJob: (id: number, params: RequestParams = {}) =>
+      this.request<HandlerResponsePageFetchJob, any>({
+        path: `/pages/fetch/jobs/${id}/retry`,
+        method: 'POST',
         secure: true,
         format: 'json',
         ...params,

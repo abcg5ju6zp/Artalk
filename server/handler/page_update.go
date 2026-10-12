@@ -67,8 +67,14 @@ func PageUpdate(app *core.App, router fiber.Router) {
 			cache.PageCacheDel(&page)
 		})
 
+		titleChanged := p.Title != page.Title
 		page.Title = p.Title
 		page.AdminOnly = p.AdminOnly
+		if titleChanged {
+			// Bump the title version so in-flight batch fetch jobs can detect
+			// the manual change and refuse to overwrite the new title.
+			page.TitleVersion++
+		}
 		if modifyKey {
 			// 相关性数据修改
 			var comments []entity.Comment

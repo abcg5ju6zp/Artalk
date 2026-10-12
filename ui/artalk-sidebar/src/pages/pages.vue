@@ -21,6 +21,9 @@ const refreshBtn = ref({
   isRun: false,
   statusText: '',
 })
+const lastJob = ref<any>(null)
+const refreshResult = ref('')
+let watchdogTimer: number | undefined
 
 onMounted(() => {
   nav.updateTabs(
@@ -45,23 +48,24 @@ onMounted(() => {
 
   fetchPages(0)
 
-  // Refresh task status recovery
-  getRefreshTaskStatus().then((d) => {
-    if (d.is_progress === true) {
-      refreshBtn.value.isRun = true
-      refreshBtn.value.statusText = d.msg
-      startRefreshTaskWatchdog()
-    }
-  })
+  // Job status recovery (progress is persisted on the server)
+  recoverRefreshJob()
 })
 
 watch(curtSite, () => {
   pagination.value?.reset()
   fetchPages(0)
+  stopWatchdog()
+  refreshBtn.value.isRun = false
+  refreshResult.value = ''
+  recoverRefreshJob()
 })
 
 onMounted(() => nav.scrollableArea?.addEventListener('scroll', scrollHandler))
-onUnmounted(() => nav.scrollableArea?.removeEventListener('scroll', scrollHandler))
+onUnmounted(() => {
+  nav.scrollableArea?.removeEventListener('scroll', scrollHandler)
+  stopWatchdog()
+})
 
 function scrollHandler() {
   showActBarBorder.value = nav.scrollableArea!.scrollTop > 10
@@ -111,30 +115,76 @@ function onPageItemRemove(id: number) {
   pages.value.splice(index, 1)
 }
 
-async function getRefreshTaskStatus() {
-  return (await artalk!.ctx.getApi().pages.getPageFetchStatus()).data
+async function getRefreshJob(jobID: number) {
+  return (await artalk!.ctx.getApi().pages.getPageFetchJob(jobID)).data
 }
 
-function startRefreshTaskWatchdog() {
-  // TODO: Not perfect polling update status
-  const timerID = window.setInterval(async () => {
-    const d = await getRefreshTaskStatus()
+function applyRunningJob(job: any) {
+  lastJob.value = null
+  refreshResult.value = ''
+  refreshBtn.value.isRun = true
+  refreshBtn.value.statusText = t('updateProgress', {
+    done: job.total - job.remaining,
+    total: job.total,
+  })
+}
 
-    if (d.is_progress === false) {
-      clearInterval(timerID)
-      setRefreshTaskDone()
+function applyFinishedJob(job: any) {
+  refreshBtn.value.isRun = false
+  lastJob.value = job
+  refreshResult.value = t('updateResult', {
+    success: job.success,
+    failed: job.failed,
+    skipped: job.skipped,
+  })
+}
+
+function startRefreshTaskWatchdog(jobID: number) {
+  stopWatchdog()
+  // TODO: Not perfect polling update status
+  watchdogTimer = window.setInterval(async () => {
+    let job: any
+    try {
+      job = await getRefreshJob(jobID)
+    } catch {
       return
     }
 
-    refreshBtn.value.statusText = d.msg
+    if (job.is_progress) {
+      refreshBtn.value.statusText = t('updateProgress', {
+        done: job.total - job.remaining,
+        total: job.total,
+      })
+      return
+    }
+
+    stopWatchdog()
+    applyFinishedJob(job)
   }, 1000)
 }
 
-function setRefreshTaskDone() {
-  refreshBtn.value.statusText = t('updateComplete')
-  window.setTimeout(() => {
-    refreshBtn.value.isRun = false
-  }, 1500)
+function stopWatchdog() {
+  if (watchdogTimer !== undefined) {
+    clearInterval(watchdogTimer)
+    watchdogTimer = undefined
+  }
+}
+
+async function recoverRefreshJob() {
+  try {
+    const job = (
+      await artalk!.ctx.getApi().pages.getLatestPageFetchJob(curtSite.value || undefined)
+    ).data
+    if (!job) return
+    if (job.is_progress) {
+      applyRunningJob(job)
+      startRefreshTaskWatchdog(job.id)
+    } else {
+      applyFinishedJob(job)
+    }
+  } catch {
+    // ignore recovery errors
+  }
 }
 
 async function refreshAllPages() {
@@ -143,16 +193,34 @@ async function refreshAllPages() {
   refreshBtn.value.statusText = t('updateReady')
 
   try {
-    await artalk!.ctx.getApi().pages.fetchAllPages({
-      site_name: curtSite.value,
-    })
+    const job = (
+      await artalk!.ctx.getApi().pages.fetchAllPages({
+        site_name: curtSite.value,
+      })
+    ).data
+    applyRunningJob(job)
+    startRefreshTaskWatchdog(job.id)
   } catch (err: any) {
     alert(err.msg)
-    setRefreshTaskDone()
-    return
+    refreshBtn.value.isRun = false
   }
+}
 
-  startRefreshTaskWatchdog()
+async function retryFailedPages() {
+  if (refreshBtn.value.isRun || !lastJob.value?.id) return
+  refreshBtn.value.isRun = true
+  refreshBtn.value.statusText = t('updateReady')
+
+  try {
+    const job = (
+      await artalk!.ctx.getApi().pages.retryFailedPageFetchJob(lastJob.value.id)
+    ).data
+    applyRunningJob(job)
+    startRefreshTaskWatchdog(job.id)
+  } catch (err: any) {
+    alert(err.msg)
+    refreshBtn.value.isRun = false
+  }
 }
 
 function cacheFlush() {
@@ -185,6 +253,15 @@ function openPage(url: string) {
           {{ refreshBtn.isRun ? refreshBtn.statusText : t('updateTitle') }}
         </span>
       </span>
+      <span
+        v-if="!refreshBtn.isRun && lastJob && lastJob.failed > 0"
+        class="atk-retry-failed-btn"
+        @click="retryFailedPages()"
+      >
+        <i class="atk-icon atk-icon-sync"></i>
+        <span class="atk-text">{{ t('retryFailed', { failed: lastJob.failed }) }}</span>
+      </span>
+      <span v-if="refreshResult" class="atk-refresh-result">{{ refreshResult }}</span>
       <span class="atk-cache-flush-all-btn" @click="cacheFlush()">
         <span class="atk-text">{{ t('cacheClear') }}</span>
       </span>
@@ -264,6 +341,16 @@ function openPage(url: string) {
 
       &:hover {
         background: var(--at-color-bg-grey);
+      }
+    }
+
+    .atk-refresh-result {
+      color: var(--at-color-sub);
+      font-size: 12px;
+      cursor: default;
+
+      &:hover {
+        background: transparent;
       }
     }
   }

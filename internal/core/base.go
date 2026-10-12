@@ -153,6 +153,9 @@ func (app *App) Bootstrap() error {
 		}
 	}
 
+	// Resume interrupted batch page-fetch jobs (progress is persisted)
+	app.Dao().ResumePageFetchJobs()
+
 	return nil
 }
 

@@ -952,25 +952,95 @@ definitions:
     - vote_down
     - vote_up
     type: object
-  handler.ResponsePageFetchStatus:
+  handler.ResponsePageFetchJob:
     properties:
-      done:
-        description: The number of pages that have been fetched
+      created_at:
+        type: string
+      failed:
+        type: integer
+      id:
         type: integer
       is_progress:
-        description: If the task is in progress
         type: boolean
-      msg:
-        description: The message of the task status
-        type: string
-      total:
-        description: The total number of pages
+      items:
+        items:
+          $ref: '#/definitions/handler.ResponsePageFetchJobItem'
+        type: array
+      remaining:
         type: integer
+      site_name:
+        type: string
+      skipped:
+        type: integer
+      status:
+        description: running | completed
+        type: string
+      success:
+        type: integer
+      total:
+        type: integer
+      updated_at:
+        type: string
     required:
-    - done
+    - created_at
+    - failed
+    - id
     - is_progress
-    - msg
+    - items
+    - remaining
+    - site_name
+    - skipped
+    - status
+    - success
     - total
+    - updated_at
+    type: object
+  handler.ResponsePageFetchJobItem:
+    properties:
+      attempts:
+        type: integer
+      error:
+        description: Failure reason
+        type: string
+      final_url:
+        description: Final URL after redirects
+        type: string
+      id:
+        type: integer
+      page_id:
+        type: integer
+      page_key:
+        type: string
+      published_at:
+        description: Publish time
+        type: string
+      redirected:
+        description: A redirect was followed
+        type: boolean
+      site_name:
+        type: string
+      skip_reason:
+        description: Why the late result was skipped
+        type: string
+      status:
+        description: pending | processing | success | failed | skipped
+        type: string
+      title:
+        description: Extracted title
+        type: string
+    required:
+    - attempts
+    - error
+    - final_url
+    - id
+    - page_id
+    - page_key
+    - published_at
+    - redirected
+    - site_name
+    - skip_reason
+    - status
+    - title
     type: object
   handler.ResponsePageList:
     properties:
@@ -2319,7 +2389,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Fetch the data of all pages
+      description: Fetch the data of all pages as a persisted, resumable job. If a
+        job for the same scope is already running, the running job is returned.
       operationId: FetchAllPages
       parameters:
       - description: The options
@@ -2334,9 +2405,40 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/handler.Map'
-        "400":
-          description: Bad Request
+            $ref: '#/definitions/handler.ResponsePageFetchJob'
+        "500":
+          description: Internal Server Error
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Map'
+            - properties:
+                msg:
+                  type: string
+              type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Fetch All Pages Data
+      tags:
+      - Page
+  /pages/fetch/jobs/{id}:
+    get:
+      description: Get the detail (counts and per-page results) of a page fetch job
+      operationId: GetPageFetchJob
+      parameters:
+      - description: The job ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.ResponsePageFetchJob'
+        "404":
+          description: Not Found
           schema:
             allOf:
             - $ref: '#/definitions/handler.Map'
@@ -2355,23 +2457,78 @@ paths:
               type: object
       security:
       - ApiKeyAuth: []
-      summary: Fetch All Pages Data
+      summary: Get Page Fetch Job
       tags:
       - Page
-  /pages/fetch/status:
-    get:
-      description: Get the status of the task of fetching all pages
-      operationId: GetPageFetchStatus
+  /pages/fetch/jobs/{id}/retry:
+    post:
+      description: Resume a finished page fetch job, retrying only its failed items
+      operationId: RetryFailedPageFetchJob
+      parameters:
+      - description: The job ID
+        in: path
+        name: id
+        required: true
+        type: integer
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/handler.ResponsePageFetchStatus'
+            $ref: '#/definitions/handler.ResponsePageFetchJob'
+        "404":
+          description: Not Found
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Map'
+            - properties:
+                msg:
+                  type: string
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Map'
+            - properties:
+                msg:
+                  type: string
+              type: object
       security:
       - ApiKeyAuth: []
-      summary: Get Pages Fetch Status
+      summary: Retry Failed Items of a Page Fetch Job
+      tags:
+      - Page
+  /pages/fetch/jobs/latest:
+    get:
+      description: Get the most recent page fetch job for a site scope, used to recover
+        the sidebar view after closing the browser or a server restart
+      operationId: GetLatestPageFetchJob
+      parameters:
+      - description: The site name scope, empty means all sites
+        in: query
+        name: site_name
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.ResponsePageFetchJob'
+        "500":
+          description: Internal Server Error
+          schema:
+            allOf:
+            - $ref: '#/definitions/handler.Map'
+            - properties:
+                msg:
+                  type: string
+              type: object
+      security:
+      - ApiKeyAuth: []
+      summary: Get Latest Page Fetch Job
       tags:
       - Page
   /pages/pv:

@@ -1534,7 +1534,7 @@ const docTemplate = `{
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "Fetch the data of all pages",
+                "description": "Fetch the data of all pages as a persisted, resumable job. If a job for the same scope is already running, the running job is returned.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1561,11 +1561,116 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handler.Map"
+                            "$ref": "#/definitions/handler.ResponsePageFetchJob"
                         }
                     },
-                    "400": {
-                        "description": "Bad Request",
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Map"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "msg": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/pages/fetch/jobs/latest": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Get the most recent page fetch job for a site scope, used to recover the sidebar view after closing the browser or a server restart",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Page"
+                ],
+                "summary": "Get Latest Page Fetch Job",
+                "operationId": "GetLatestPageFetchJob",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "The site name scope, empty means all sites",
+                        "name": "site_name",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ResponsePageFetchJob"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Map"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "msg": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+        "/pages/fetch/jobs/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "description": "Get the detail (counts and per-page results) of a page fetch job",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Page"
+                ],
+                "summary": "Get Page Fetch Job",
+                "operationId": "GetPageFetchJob",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "The job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handler.ResponsePageFetchJob"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "allOf": [
                                 {
@@ -1603,27 +1708,72 @@ const docTemplate = `{
                 }
             }
         },
-        "/pages/fetch/status": {
-            "get": {
+        "/pages/fetch/jobs/{id}/retry": {
+            "post": {
                 "security": [
                     {
                         "ApiKeyAuth": []
                     }
                 ],
-                "description": "Get the status of the task of fetching all pages",
+                "description": "Resume a finished page fetch job, retrying only its failed items",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Page"
                 ],
-                "summary": "Get Pages Fetch Status",
-                "operationId": "GetPageFetchStatus",
+                "summary": "Retry Failed Items of a Page Fetch Job",
+                "operationId": "RetryFailedPageFetchJob",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "The job ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handler.ResponsePageFetchStatus"
+                            "$ref": "#/definitions/handler.ResponsePageFetchJob"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Map"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "msg": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/handler.Map"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "msg": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            ]
                         }
                     }
                 }
@@ -5243,30 +5393,124 @@ const docTemplate = `{
                 }
             }
         },
-        "handler.ResponsePageFetchStatus": {
+        "handler.ResponsePageFetchJob": {
             "type": "object",
             "required": [
-                "done",
+                "created_at",
+                "failed",
+                "id",
                 "is_progress",
-                "msg",
-                "total"
+                "items",
+                "remaining",
+                "site_name",
+                "skipped",
+                "status",
+                "success",
+                "total",
+                "updated_at"
             ],
             "properties": {
-                "done": {
-                    "description": "The number of pages that have been fetched",
+                "created_at": {
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "integer"
+                },
+                "id": {
                     "type": "integer"
                 },
                 "is_progress": {
-                    "description": "If the task is in progress",
                     "type": "boolean"
                 },
-                "msg": {
-                    "description": "The message of the task status",
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/handler.ResponsePageFetchJobItem"
+                    }
+                },
+                "remaining": {
+                    "type": "integer"
+                },
+                "site_name": {
                     "type": "string"
                 },
-                "total": {
-                    "description": "The total number of pages",
+                "skipped": {
                     "type": "integer"
+                },
+                "status": {
+                    "description": "running | completed",
+                    "type": "string"
+                },
+                "success": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.ResponsePageFetchJobItem": {
+            "type": "object",
+            "required": [
+                "attempts",
+                "error",
+                "final_url",
+                "id",
+                "page_id",
+                "page_key",
+                "published_at",
+                "redirected",
+                "site_name",
+                "skip_reason",
+                "status",
+                "title"
+            ],
+            "properties": {
+                "attempts": {
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Failure reason",
+                    "type": "string"
+                },
+                "final_url": {
+                    "description": "Final URL after redirects",
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "page_id": {
+                    "type": "integer"
+                },
+                "page_key": {
+                    "type": "string"
+                },
+                "published_at": {
+                    "description": "Publish time",
+                    "type": "string"
+                },
+                "redirected": {
+                    "description": "A redirect was followed",
+                    "type": "boolean"
+                },
+                "site_name": {
+                    "type": "string"
+                },
+                "skip_reason": {
+                    "description": "Why the late result was skipped",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "pending | processing | success | failed | skipped",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Extracted title",
+                    "type": "string"
                 }
             }
         },

@@ -93,35 +93,69 @@ func (dao *Dao) FetchPageFromURL(p *entity.Page) error {
 	return nil
 }
 
-func GetTitleByURL(url string) (string, error) {
-	if !utils.ValidateURL(url) {
-		log.Error("Invalid URL: " + url)
-		return "", fmt.Errorf("invalid URL")
+// pageFetchHTTPClient has a timeout so a hanging page cannot block fetch tasks forever
+var pageFetchHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+}
+
+// Max number of HTTP / meta-refresh redirects followed for one page
+const pageFetchMaxRedirectDepth = 10
+
+// pageFetchDetail is the detailed fetch result of one URL.
+type pageFetchDetail struct {
+	Title      string
+	FinalURL   string
+	Redirected bool
+}
+
+// fetchTitleDetailByURL fetches the page title and records redirect information.
+func fetchTitleDetailByURL(rawURL string, depth int) (pageFetchDetail, error) {
+	if !utils.ValidateURL(rawURL) {
+		log.Error("Invalid URL: " + rawURL)
+		return pageFetchDetail{}, fmt.Errorf("invalid URL")
+	}
+
+	if depth > pageFetchMaxRedirectDepth {
+		return pageFetchDetail{}, fmt.Errorf("too many redirects")
 	}
 
 	// Request the HTML page.
-	res, err := http.Get(url)
+	res, err := pageFetchHTTPClient.Get(rawURL)
 	if err != nil {
 		log.Error(err)
-		return "", err
+		return pageFetchDetail{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Error(fmt.Sprintf("status code error: %d '%s' '%s'", res.StatusCode, res.Status, url))
-		return "", fmt.Errorf("status code error")
+		log.Error(fmt.Sprintf("status code error: %d '%s' '%s'", res.StatusCode, res.Status, rawURL))
+		return pageFetchDetail{}, fmt.Errorf("status code error: %d", res.StatusCode)
 	}
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return "", err
+		return pageFetchDetail{}, err
 	}
+
+	finalURL := res.Request.URL.String()
+	redirected := depth > 0 || finalURL != rawURL
 
 	data := pageExtractFromHTML(body)
 	if data.RedirectURL != "" {
-		return GetTitleByURL(data.RedirectURL)
+		detail, err := fetchTitleDetailByURL(data.RedirectURL, depth+1)
+		detail.Redirected = true
+		return detail, err
 	}
 
-	return data.Title, nil
+	return pageFetchDetail{
+		Title:      data.Title,
+		FinalURL:   finalURL,
+		Redirected: redirected,
+	}, nil
+}
+
+func GetTitleByURL(url string) (string, error) {
+	detail, err := fetchTitleDetailByURL(url, 0)
+	return detail.Title, err
 }
 
 // the data extracted from a page html
