@@ -6,6 +6,7 @@ import (
 
 	"github.com/artalkjs/artalk/v2/internal/anti_spam"
 	"github.com/artalkjs/artalk/v2/internal/entity"
+	"github.com/artalkjs/artalk/v2/internal/log"
 )
 
 var _ Service = (*AntiSpamService)(nil)
@@ -49,6 +50,10 @@ func (s *AntiSpamService) Dispose() error {
 }
 
 func (s *AntiSpamService) CheckAndBlock(data *AntiSpamCheckPayload) {
+	if s.client == nil {
+		log.Error("[AntiSpamService] client is not initialized")
+		return
+	}
 	s.client.CheckAndBlock(s.payload2CheckerParams(data))
 }
 

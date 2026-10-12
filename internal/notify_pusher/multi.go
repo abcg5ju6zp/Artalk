@@ -11,42 +11,88 @@ import (
 	"github.com/artalkjs/artalk/v2/internal/template"
 )
 
-func (pusher *NotifyPusher) multiPush(comment *entity.Comment, pComment *entity.Comment) {
-	if !pusher.checkNeedMultiPush(comment, pComment) {
-		return
-	}
+// multiPushEnabled reports whether any multi-push provider is turned on.
+func (pusher *NotifyPusher) multiPushEnabled() bool {
+	return pusher.helperServiceCount > 0 ||
+		pusher.conf.Lark.Enabled ||
+		pusher.conf.Bark.Enabled
+}
 
-	// 通知消息
-	allAdmins := pusher.dao.GetAllAdminIDs()
-	if len(allAdmins) == 0 {
-		log.Warn("Multi push disabled: no admin user found")
-		return
-	}
-
-	firstAdminUser := allAdmins[0]
-	subject, body := pusher.getAdminNotifySubjectBody(comment, firstAdminUser)
-
+// pushMultiPush sends the notification via Telegram / DingTalk / Slack / LINE,
+// Lark and Bark, and returns the aggregated observable delivery status.
+//
+// A failure of the helper services is always recorded as unknown: individual
+// receivers may still have gotten the message, so the channel must be retried
+// rather than assumed failed.
+func (pusher *NotifyPusher) pushMultiPush(comment *entity.Comment, pComment *entity.Comment, subject, body string) (string, string) {
 	log.Debug(time.Now(), " 多元推送")
 
-	// 使用 Notify 库发送
-	if err := pusher.helper.Send(pusher.ctx, subject, html.EscapeString(body)); err != nil {
-		log.Error("[Notify]", err)
+	statuses := []string{}
+	errMsg := ""
+	collect := func(status string, err error) {
+		if err != nil {
+			log.Error("[Notify]", err)
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+		}
+		statuses = append(statuses, status)
+	}
+
+	// Telegram / DingTalk / Slack / LINE
+	if pusher.helperServiceCount > 0 {
+		if err := pusher.helper.Send(pusher.ctx, subject, html.EscapeString(body)); err != nil {
+			collect(entity.DeliveryUnknown, err)
+		} else {
+			collect(entity.DeliverySent, nil)
+		}
 	}
 
 	// 飞书
 	if pusher.conf.Lark.Enabled {
-		sender.SendLark(pusher.conf.Lark.WebhookURL, subject, body, pusher.conf.Lark.MsgType == "card")
+		if err := sender.SendLark(pusher.conf.Lark.WebhookURL, subject, body, pusher.conf.Lark.MsgType == "card"); err != nil {
+			collect(classifyTimeoutErr(err), err)
+		} else {
+			collect(entity.DeliverySent, nil)
+		}
 	}
 
 	// Bark
 	if pusher.conf.Bark.Enabled {
-		sender.SendBark(pusher.conf.Bark.Server, subject, body)
+		if err := sender.SendBark(pusher.conf.Bark.Server, subject, body); err != nil {
+			collect(classifyTimeoutErr(err), err)
+		} else {
+			collect(entity.DeliverySent, nil)
+		}
 	}
 
-	// WebHook
-	if pusher.conf.WebHook.Enabled {
-		pusher.sendWebhook(subject, body, comment, pComment)
+	return mergeDeliveryStatus(statuses...), errMsg
+}
+
+// pushWebhook sends the standalone WebHook notification.
+func (pusher *NotifyPusher) pushWebhook(subject string, body string, comment *entity.Comment, pComment *entity.Comment) (string, string) {
+	var pCommentCooked entity.CookedComment
+	if pComment != nil && !pComment.IsEmpty() {
+		pCommentCooked = pusher.dao.CookComment(pComment)
 	}
+
+	err := sender.SendWebHook(pusher.conf.WebHook.URL, &sender.NotifyWebHookReqBody{
+		NotifySubject: subject,
+		NotifyBody:    body,
+		Comment:       pusher.dao.CookComment(comment),
+		ParentComment: pCommentCooked,
+	})
+	if err != nil {
+		return classifyTimeoutErr(err), err.Error()
+	}
+	return entity.DeliverySent, ""
+}
+
+func classifyTimeoutErr(err error) string {
+	if sender.IsTimeoutErr(err) {
+		return entity.DeliveryUnknown
+	}
+	return entity.DeliveryFailed
 }
 
 func (pusher *NotifyPusher) getAdminNotifySubjectBody(comment *entity.Comment, toUserID uint) (string, string) {
@@ -70,18 +116,4 @@ func (pusher *NotifyPusher) getAdminNotifySubjectBody(comment *entity.Comment, t
 	}
 
 	return subject, body
-}
-
-func (pusher *NotifyPusher) sendWebhook(subject string, body string, comment *entity.Comment, pComment *entity.Comment) {
-	var pCommentCooked entity.CookedComment
-	if pComment != nil && !pComment.IsEmpty() {
-		pCommentCooked = pusher.dao.CookComment(pComment)
-	}
-
-	sender.SendWebHook(pusher.conf.WebHook.URL, &sender.NotifyWebHookReqBody{
-		NotifySubject: subject,
-		NotifyBody:    body,
-		Comment:       pusher.dao.CookComment(comment),
-		ParentComment: pCommentCooked,
-	})
 }

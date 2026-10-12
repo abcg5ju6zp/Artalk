@@ -1,12 +1,16 @@
 package email
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/artalkjs/artalk/v2/internal/config"
 	"github.com/artalkjs/artalk/v2/internal/log"
 )
+
+// ErrQueueClosed is returned when an email is pushed after the queue was closed.
+var ErrQueueClosed = errors.New("email queue is closed")
 
 type EmailConf struct {
 	config.EmailConf
@@ -72,13 +76,18 @@ func (q *EmailQueue) handleEmail(email *Email) {
 }
 
 // Add an email to the sending queue
-func (q *EmailQueue) Push(email *Email) {
+func (q *EmailQueue) Push(email *Email) error {
+	q.mux.Lock()
+	defer q.mux.Unlock()
+
 	if q.closed {
+		err := ErrQueueClosed
 		log.Error("[Email] Queue closed, dropping email")
-		return
+		return err
 	}
 
 	q.ch <- email
+	return nil
 }
 
 func (q *EmailQueue) Close() {

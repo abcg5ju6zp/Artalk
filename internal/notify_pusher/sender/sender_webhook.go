@@ -3,7 +3,7 @@ package sender
 import (
 	"bytes"
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 
 	"github.com/artalkjs/artalk/v2/internal/log"
@@ -16,19 +16,22 @@ type NotifyWebHookReqBody struct {
 	ParentComment interface{} `json:"parent_comment"`
 }
 
-// WebHook 发送
-func SendWebHook(url string, reqData *NotifyWebHookReqBody) {
+// SendWebHook pushes a notification.
+// A nil error is returned only when the endpoint responds with 2xx;
+// a timeout error means the delivery result is unconfirmed.
+func SendWebHook(rawURL string, reqData *NotifyWebHookReqBody) error {
 	jsonByte, _ := json.Marshal(reqData)
-	result, err := http.Post(url, "application/json", bytes.NewReader(jsonByte))
+	statusCode, body, err := doRequest(http.MethodPost, rawURL, bytes.NewReader(jsonByte))
 	if err != nil {
 		log.Error("[WebHook Push] ", "Failed to send msg:", err)
-		return
+		return err
 	}
 
-	if result.StatusCode != 200 {
-		body, _ := io.ReadAll(result.Body)
-		log.Error("[WebHook Push] Failed to send msg:", string(body))
+	if statusCode != http.StatusOK {
+		err := fmt.Errorf("webhook respond status %d: %s", statusCode, body)
+		log.Error("[WebHook Push] Failed to send msg:", err)
+		return err
 	}
 
-	defer result.Body.Close()
+	return nil
 }

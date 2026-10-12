@@ -31,7 +31,7 @@ func TestQueue(t *testing.T) {
 		})
 		defer q.Close()
 
-		q.Push(&testEmail)
+		assert.NoError(t, q.Push(&testEmail))
 
 		select {
 		case email := <-sendSuccess:
@@ -59,7 +59,7 @@ func TestQueue(t *testing.T) {
 		})
 		defer q.Close()
 
-		q.Push(&testEmail)
+		assert.NoError(t, q.Push(&testEmail))
 
 		select {
 		case email := <-sendAttempted:

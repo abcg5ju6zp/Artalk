@@ -1,9 +1,14 @@
 package core
 
 import (
+	"errors"
+
 	"github.com/artalkjs/artalk/v2/internal/entity"
 	"github.com/artalkjs/artalk/v2/internal/notify_pusher"
 )
+
+// errNotifyUnavailable is returned before the pusher is initialized.
+var errNotifyUnavailable = errors.New("notify pusher is not initialized")
 
 var _ Service = (*NotifyService)(nil)
 
@@ -25,7 +30,12 @@ func (s *NotifyService) Init() error {
 			if err != nil {
 				return err
 			}
-			emailService.AsyncSend(notify)
+			if err := emailService.AsyncSend(notify); err != nil {
+				if errors.Is(err, ErrEmailDisabled) {
+					return notify_pusher.ErrEmailDisabled
+				}
+				return err
+			}
 			return nil
 		},
 	})
@@ -40,6 +50,19 @@ func (s *NotifyService) Dispose() error {
 }
 
 func (s *NotifyService) Push(comment *entity.Comment, pComment *entity.Comment) error {
+	if s.pusher == nil {
+		return errNotifyUnavailable
+	}
 	s.pusher.Push(comment, pComment)
+	return nil
+}
+
+// PushTracked runs the notification channels while recording per-channel
+// observable delivery results.
+func (s *NotifyService) PushTracked(comment *entity.Comment, pComment *entity.Comment, recorder notify_pusher.DeliveryRecorder) error {
+	if s.pusher == nil {
+		return errNotifyUnavailable
+	}
+	s.pusher.PushTracked(comment, pComment, recorder)
 	return nil
 }

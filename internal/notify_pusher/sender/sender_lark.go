@@ -2,7 +2,6 @@ package sender
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,8 +11,10 @@ import (
 	"github.com/artalkjs/artalk/v2/internal/utils"
 )
 
-// 飞书发送
-func SendLark(webhookURL string, title string, content string, isCard bool) {
+// SendLark pushes a Lark notification.
+// A nil error is returned only when the endpoint responds with 2xx;
+// a timeout error means the delivery result is unconfirmed.
+func SendLark(webhookURL string, title string, content string, isCard bool) error {
 	if title != "" {
 		content = title + "\n\n" + content
 	}
@@ -33,18 +34,19 @@ func SendLark(webhookURL string, title string, content string, isCard bool) {
 		data = getLarkTextJson(content)
 	}
 
-	result, err := http.Post(webhookURL, "application/json", strings.NewReader(data))
+	statusCode, body, err := doRequest(http.MethodPost, webhookURL, strings.NewReader(data))
 	if err != nil {
 		log.Error("[飞书] Failed to send msg:", err)
-		return
+		return err
 	}
 
-	if result.StatusCode != 200 {
-		body, _ := io.ReadAll(result.Body)
-		log.Error("[飞书] Failed to send msg:", string(body), " ", string(data))
+	if statusCode != http.StatusOK {
+		err := fmt.Errorf("lark respond status %d: %s", statusCode, body)
+		log.Error("[飞书] Failed to send msg:", err, " ", string(data))
+		return err
 	}
 
-	defer result.Body.Close()
+	return nil
 }
 
 func getLarkTextJson(text string) string {

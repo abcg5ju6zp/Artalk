@@ -143,10 +143,19 @@ func CommentCreate(app *core.App, router fiber.Router) {
 			return common.RespError(c, 500, i18n.T("Comment failed"))
 		}
 
-		// Async jobs after comment created
-		go commentCreatedJobs(app, comment, parentComment, commentCreatedJobsArguments{
-			ip, ua, referer, isAdmin, isVerified, page,
-		})
+		// Persist the recoverable post-processing identity (page completion,
+		// anti-spam verdict and notifications). Unfinished stages resume on
+		// restart and confirmed channels are not sent twice.
+		if postTaskService, err := core.AppService[*core.PostTaskService](app); err == nil {
+			postTaskService.Dispatch(comment, core.PostTaskParams{
+				IP:      ip,
+				UA:      ua,
+				Referer: referer,
+				IsAdmin: isAdmin,
+			})
+		} else {
+			log.Error("[PostTaskService] err: ", err)
+		}
 
 		// Response the comment data
 		cookedComment := app.Dao().CookComment(&comment)
@@ -223,50 +232,4 @@ func getUpdateAnonymousUser(app *core.App, name string, email string, link strin
 	}
 
 	return user, nil
-}
-
-type commentCreatedJobsArguments struct {
-	IP         string
-	UA         string
-	Referer    string
-	IsAdmin    bool
-	IsVerified bool
-	Page       entity.Page
-}
-
-// The jobs after comment created (should call in async)
-//
-// It will do the following jobs:
-//  1. Page Update
-//  2. AntiSpam Check
-//  3. Send Notify (email, webhook, telegram, etc.)
-func commentCreatedJobs(app *core.App, comment entity.Comment, parentComment entity.Comment, args commentCreatedJobsArguments) {
-	// Page Update (if the original page title is empty and the URL is given)
-	if app.Dao().CookPage(&args.Page).URL != "" && args.Page.Title == "" {
-		go app.Dao().FetchPageFromURL(&args.Page)
-	}
-
-	// AntiSpam Check
-	if !args.IsAdmin { // if the user is an admin, skip the anti-spam check
-		if antiSpamService, err := core.AppService[*core.AntiSpamService](app); err == nil {
-			// The check and block is sync, if comment is blocked, the message will not be sent
-			antiSpamService.CheckAndBlock(&core.AntiSpamCheckPayload{
-				Comment:      &comment,
-				ReqReferer:   args.Referer,
-				ReqIP:        args.IP,
-				ReqUserAgent: args.UA,
-			})
-		} else {
-			log.Error("[AntiSpamService] err: ", err)
-		}
-	}
-
-	// Send Notify (email, webhook, telegram, etc.)
-	if notifyService, err := core.AppService[*core.NotifyService](app); err == nil {
-		if err := notifyService.Push(&comment, &parentComment); err != nil {
-			log.Error("[NotifyService] notify push err: ", err)
-		}
-	} else {
-		log.Error("[NotifyService] err: ", err)
-	}
 }

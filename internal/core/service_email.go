@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"time"
 
 	"github.com/artalkjs/artalk/v2/internal/email"
@@ -9,11 +10,18 @@ import (
 	"github.com/artalkjs/artalk/v2/internal/template"
 )
 
+// ErrEmailDisabled is returned when the email service is turned off in config.
+var ErrEmailDisabled = errors.New("email service is disabled")
+
 var _ Service = (*EmailService)(nil)
 
 type EmailService struct {
 	app   *App
 	queue *email.EmailQueue
+
+	// onDeliveryConfirmed is invoked after an email is confirmed sent,
+	// carrying the ID of the associated comment.
+	onDeliveryConfirmed func(commentID uint)
 }
 
 func NewEmailService(app *App) *EmailService {
@@ -29,8 +37,17 @@ func (e *EmailService) Init() error {
 				return
 			}
 
-			if err := e.app.Dao().NotifySetEmailed(email.LinkedNotify); err != nil { // flag associated comment as emailed
+			// flag associated comment as emailed
+			if err := e.app.Dao().NotifySetEmailed(email.LinkedNotify); err != nil {
 				log.Errorf("[Email] Flag email delivery status for associated comment failed: %s", err)
+				return
+			}
+
+			// confirm the email channel of the recoverable post task once all
+			// notifications bound to the comment are emailed
+			e.app.Dao().RefreshPostEmailDelivery(email.LinkedNotify.CommentID)
+			if e.onDeliveryConfirmed != nil {
+				e.onDeliveryConfirmed(email.LinkedNotify.CommentID)
 			}
 		},
 	})
@@ -44,6 +61,11 @@ func (e *EmailService) Dispose() error {
 	}
 
 	return nil
+}
+
+// SetOnDeliveryConfirmed registers the confirmed-delivery callback.
+func (e *EmailService) SetOnDeliveryConfirmed(fn func(commentID uint)) {
+	e.onDeliveryConfirmed = fn
 }
 
 func (e *EmailService) GetRenderer(useAdminTplParam ...bool) *template.Renderer {
@@ -65,11 +87,11 @@ func (e *EmailService) GetRenderer(useAdminTplParam ...bool) *template.Renderer 
 }
 
 func (e *EmailService) AsyncSendTo(subject string, body string, toAddr string) {
-	if !e.app.Conf().Email.Enabled {
+	if !e.app.Conf().Email.Enabled || e.queue == nil {
 		return
 	}
 
-	e.queue.Push(&email.Email{
+	_ = e.queue.Push(&email.Email{
 		FromAddr: e.app.Conf().Email.SendAddr,
 		FromName: e.app.Conf().SiteDefault, // e.app.Conf().Email.SendName,
 		ToAddr:   toAddr,
@@ -78,9 +100,15 @@ func (e *EmailService) AsyncSendTo(subject string, body string, toAddr string) {
 	})
 }
 
-func (e *EmailService) AsyncSend(notify *entity.Notify) {
+// AsyncSend renders and enqueues the notification email.
+// It returns ErrEmailDisabled when email is turned off; such a result means
+// the channel is not applicable rather than a retryable failure.
+func (e *EmailService) AsyncSend(notify *entity.Notify) error {
 	if !e.app.Conf().Email.Enabled {
-		return
+		return ErrEmailDisabled
+	}
+	if e.queue == nil {
+		return errors.New("email queue is not initialized")
 	}
 
 	receiveUser := e.app.Dao().FetchUserForNotify(notify)
@@ -98,7 +126,7 @@ func (e *EmailService) AsyncSend(notify *entity.Notify) {
 	log.Debug(time.Now(), " "+receiveUser.Email)
 
 	// add email send task to queue
-	e.queue.Push(&email.Email{
+	return e.queue.Push(&email.Email{
 		FromAddr:     e.app.Conf().Email.SendAddr,
 		FromName:     renderer.Render(notify, e.app.Conf().Email.SendName),
 		ToAddr:       receiveUser.Email,

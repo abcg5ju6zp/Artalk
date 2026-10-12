@@ -47,6 +47,7 @@ func (app *App) injectDefaultServices() {
 	AppInject(app, NewIPRegionService(app))
 	AppInject(app, NewNotifyService(app))
 	AppInject(app, NewAntiSpamService(app))
+	AppInject(app, NewPostTaskService(app))
 }
 
 func (app *App) registerDefaultHooks() {
@@ -151,6 +152,12 @@ func (app *App) Bootstrap() error {
 		if err := s.Init(); err != nil {
 			return fmt.Errorf("Service %s init error: %w", name, err)
 		}
+	}
+
+	// resume comment post-processing tasks interrupted by a previous exit,
+	// after every service is ready
+	if postTaskService, err := AppService[*PostTaskService](app); err == nil {
+		postTaskService.Recover()
 	}
 
 	return nil

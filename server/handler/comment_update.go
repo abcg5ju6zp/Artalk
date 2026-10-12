@@ -172,7 +172,7 @@ func renotifyWhenPendingModified(app *core.App, comment *entity.Comment) (err er
 	if err != nil {
 		return err
 	}
-	emailService.AsyncSend(&notify)
+	_ = emailService.AsyncSend(&notify)
 
 	return
 }

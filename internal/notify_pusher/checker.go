@@ -70,7 +70,9 @@ func (pusher *NotifyPusher) checkNeedSendEmailToAdmin(comment *entity.Comment, p
 }
 
 func (pusher *NotifyPusher) checkNeedMultiPush(comment *entity.Comment, pComment *entity.Comment) bool {
-	isRootComment := pComment == nil || pComment.IsEmpty()
+	// Determine root by the persisted Rid rather than the in-memory parent,
+	// so a reply whose parent comment was deleted later is not treated as root.
+	isRootComment := comment.Rid == 0
 
 	// 忽略来自管理员的评论
 	coUser := pusher.dao.FetchUserForComment(comment)
@@ -86,7 +88,9 @@ func (pusher *NotifyPusher) checkNeedMultiPush(comment *entity.Comment, pComment
 	// 非嘈杂模式
 	if !pusher.conf.NoiseMode {
 		// 如果不是 root 评论 且 回复目标不是管理员，直接忽略
-		if !isRootComment && !pusher.dao.FetchUserForComment(pComment).IsAdmin {
+		// (父评论已被删除时同样停止发送)
+		if !isRootComment && (pComment == nil || pComment.IsEmpty() ||
+			!pusher.dao.FetchUserForComment(pComment).IsAdmin) {
 			return false
 		}
 	}

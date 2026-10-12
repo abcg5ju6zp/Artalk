@@ -23,10 +23,11 @@ type NotifyPusherConf struct {
 }
 
 type NotifyPusher struct {
-	conf   *NotifyPusherConf
-	dao    *dao.Dao
-	ctx    context.Context
-	helper *notify.Notify
+	conf                *NotifyPusherConf
+	dao                 *dao.Dao
+	ctx                 context.Context
+	helper              *notify.Notify
+	helperServiceCount  int
 }
 
 func NewNotifyPusher(conf *NotifyPusherConf) *NotifyPusher {
@@ -54,6 +55,7 @@ func (pusher *NotifyPusher) loadHelper() {
 		if telegramService, err := telegram.New(tgConf.ApiToken); err == nil {
 			telegramService.AddReceivers(tgConf.Receivers...)
 			helper.UseServices(telegramService)
+			pusher.helperServiceCount++
 		} else {
 			log.Error("[Notify] Telegram service init error: ", err)
 		}
@@ -64,6 +66,7 @@ func (pusher *NotifyPusher) loadHelper() {
 	if dingTalkConf.Enabled {
 		dingTalkService := dingding.New(&dingding.Config{Token: dingTalkConf.Token, Secret: dingTalkConf.Secret})
 		helper.UseServices(dingTalkService)
+		pusher.helperServiceCount++
 	}
 
 	// Slack
@@ -72,6 +75,7 @@ func (pusher *NotifyPusher) loadHelper() {
 		slackService := slack.New(slackConf.OauthToken)
 		slackService.AddReceivers(slackConf.Receivers...)
 		helper.UseServices(slackService)
+		pusher.helperServiceCount++
 	}
 
 	// LINE
@@ -80,6 +84,7 @@ func (pusher *NotifyPusher) loadHelper() {
 		if lineService, err := line.New(pusher.conf.LINE.ChannelSecret, pusher.conf.LINE.ChannelAccessToken); err == nil {
 			lineService.AddReceivers(LINEConf.Receivers...)
 			helper.UseServices(lineService)
+			pusher.helperServiceCount++
 		} else {
 			log.Error("[Notify] LINE service init error: ", err)
 		}

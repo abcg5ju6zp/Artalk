@@ -93,6 +93,10 @@ func (dao *Dao) FetchPageFromURL(p *entity.Page) error {
 	return nil
 }
 
+// pageFetchClient bounds page title fetching so a hanging page cannot pin a
+// post-processing task indefinitely.
+var pageFetchClient = &http.Client{Timeout: 15 * time.Second}
+
 func GetTitleByURL(url string) (string, error) {
 	if !utils.ValidateURL(url) {
 		log.Error("Invalid URL: " + url)
@@ -100,7 +104,7 @@ func GetTitleByURL(url string) (string, error) {
 	}
 
 	// Request the HTML page.
-	res, err := http.Get(url)
+	res, err := pageFetchClient.Get(url)
 	if err != nil {
 		log.Error(err)
 		return "", err
