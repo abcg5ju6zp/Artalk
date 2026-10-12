@@ -1,6 +1,8 @@
 package dao
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"github.com/artalkjs/artalk/v2/internal/entity"
 	"github.com/artalkjs/artalk/v2/internal/log"
 	"github.com/artalkjs/artalk/v2/internal/utils"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ===============
@@ -93,35 +97,138 @@ func (dao *Dao) FetchPageFromURL(p *entity.Page) error {
 	return nil
 }
 
-func GetTitleByURL(url string) (string, error) {
-	if !utils.ValidateURL(url) {
-		log.Error("Invalid URL: " + url)
-		return "", fmt.Errorf("invalid URL")
-	}
+// Page title publish outcomes of a late batch-fetch result.
+const (
+	PageTitlePublished = "published" // The fetched title was written to the db and cache
+	PageTitleUnchanged = "unchanged" // The current title already equals the fetched one, nothing to write
+	PageTitleSkipped   = "skipped"   // The page was renamed, moved, deleted or manually re-titled
+)
 
-	// Request the HTML page.
-	res, err := http.Get(url)
-	if err != nil {
-		log.Error(err)
-		return "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Error(fmt.Sprintf("status code error: %d '%s' '%s'", res.StatusCode, res.Status, url))
-		return "", fmt.Errorf("status code error")
-	}
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
+// PublishFetchedPageTitle writes a fetched title only when the page still belongs
+// to the original site and neither the key nor the title version (title snapshot)
+// were changed after the job started. A stale result is reported as PageTitleSkipped
+// and never restores old values or recreates a missing page.
+func (dao *Dao) PublishFetchedPageTitle(pageID uint, snapshotKey, snapshotSite, snapshotTitle, fetchedTitle string) (string, error) {
+	var page entity.Page
+	if err := dao.DB().First(&page, pageID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return PageTitleSkipped, nil // The page was deleted; do not recreate it
+		}
 		return "", err
 	}
 
-	data := pageExtractFromHTML(body)
-	if data.RedirectURL != "" {
-		return GetTitleByURL(data.RedirectURL)
+	if page.Key != snapshotKey || page.SiteName != snapshotSite || page.Title != snapshotTitle {
+		return PageTitleSkipped, nil
 	}
 
-	return data.Title, nil
+	if fetchedTitle == "" || page.Title == fetchedTitle {
+		return PageTitleUnchanged, nil
+	}
+
+	// Conditional update: confirm the identity and the title version again at write
+	// time so a concurrent admin rename/move/re-title cannot be overwritten.
+	result := dao.DB().Model(&entity.Page{}).
+		Where("id = ? AND site_name = ? AND title = ?", pageID, snapshotSite, snapshotTitle).
+		Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: snapshotKey}).
+		Update("title", fetchedTitle)
+	if result.Error != nil {
+		return "", result.Error
+	}
+	if result.RowsAffected == 0 {
+		return PageTitleSkipped, nil
+	}
+
+	// Refresh the cache with the published value instead of writing to it blindly.
+	var fresh entity.Page
+	if err := dao.DB().First(&fresh, pageID).Error; err == nil {
+		dao.CacheAction(func(cache *DaoCache) {
+			_ = cache.PageCacheSave(&fresh)
+		})
+	}
+
+	return PageTitlePublished, nil
+}
+
+// pageFetchHTTPClient limits how long a single page fetch may block.
+// Without the timeout an unreachable host may stall the batch worker forever.
+var pageFetchHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+}
+
+// maxPageFetchRedirects bounds html meta-refresh hopping while resolving a title.
+const maxPageFetchRedirects = 10
+
+// ErrPageFetchURLEmpty is returned when a page has no accessible URL to fetch.
+var ErrPageFetchURLEmpty = errors.New("URL cannot be null")
+
+func GetTitleByURL(rawURL string) (string, error) {
+	result, err := FetchPageTitleDetail(context.Background(), rawURL)
+	if err != nil {
+		return "", err
+	}
+	return result.Title, nil
+}
+
+// PageTitleFetchResult is the detailed outcome of fetching a page title.
+type PageTitleFetchResult struct {
+	Title     string // Title resolved from the final page
+	FinalURL  string // Final URL after following html redirects
+	Redirects int    // Number of html redirects followed
+}
+
+// FetchPageTitleDetail requests the URL, follows html meta refresh redirects and
+// returns the resolved title together with redirect tracing.
+func FetchPageTitleDetail(ctx context.Context, rawURL string) (PageTitleFetchResult, error) {
+	currentURL := rawURL
+	redirects := 0
+
+	for {
+		if !utils.ValidateURL(currentURL) {
+			log.Error("Invalid URL: " + currentURL)
+			return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, fmt.Errorf("invalid URL")
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL, nil)
+		if err != nil {
+			return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, err
+		}
+
+		// Request the HTML page.
+		res, err := pageFetchHTTPClient.Do(req)
+		if err != nil {
+			log.Error(err)
+			return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, err
+		}
+
+		body, readErr := io.ReadAll(res.Body)
+		res.Body.Close()
+		if readErr != nil {
+			log.Error(readErr)
+			return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, readErr
+		}
+
+		if res.StatusCode != http.StatusOK {
+			err := fmt.Errorf("status code error: %d '%s' '%s'", res.StatusCode, res.Status, currentURL)
+			log.Error(err)
+			return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, fmt.Errorf("status code error")
+		}
+
+		data := pageExtractFromHTML(body)
+		if data.RedirectURL != "" {
+			if redirects >= maxPageFetchRedirects {
+				return PageTitleFetchResult{FinalURL: currentURL, Redirects: redirects}, fmt.Errorf("too many redirects")
+			}
+			redirects++
+			currentURL = data.RedirectURL
+			continue
+		}
+
+		return PageTitleFetchResult{
+			Title:     data.Title,
+			FinalURL: currentURL,
+			Redirects: redirects,
+		}, nil
+	}
 }
 
 // the data extracted from a page html

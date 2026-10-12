@@ -14,6 +14,7 @@ import (
 	"github.com/artalkjs/artalk/v2/internal/hook"
 	"github.com/artalkjs/artalk/v2/internal/i18n"
 	"github.com/artalkjs/artalk/v2/internal/log"
+	"github.com/artalkjs/artalk/v2/internal/pagefetch"
 	"github.com/artalkjs/artalk/v2/internal/pkged"
 )
 
@@ -22,6 +23,8 @@ type App struct {
 	dao     *dao.Dao
 	cache   *cache.Cache
 	service *map[string]Service
+
+	pageFetch *pagefetch.Manager
 
 	onTerminate   *hook.Hook[*TerminateEvent]
 	onConfUpdated *hook.Hook[*ConfUpdatedEvent]
@@ -146,6 +149,10 @@ func (app *App) Bootstrap() error {
 	// keep config file and databases consistent
 	app.syncFromConf()
 
+	// resume persisted "fetch all pages" jobs and start their workers
+	app.pageFetch = pagefetch.NewManager(app.Dao())
+	app.pageFetch.Resume()
+
 	// init services (do not depend on the order of dependency injection)
 	for name, s := range *app.service {
 		if err := s.Init(); err != nil {
@@ -157,6 +164,12 @@ func (app *App) Bootstrap() error {
 }
 
 func (app *App) ResetBootstrapState() error {
+	// stop page fetch workers before the database is closed
+	if app.pageFetch != nil {
+		app.pageFetch.Close()
+		app.pageFetch = nil
+	}
+
 	// close database
 	if app.Dao() != nil {
 		sqlDB, _ := app.Dao().DB().DB()
@@ -232,6 +245,10 @@ func (app *App) SetConf(conf *config.Config) {
 
 func (app *App) Dao() *dao.Dao {
 	return app.dao
+}
+
+func (app *App) PageFetch() *pagefetch.Manager {
+	return app.pageFetch
 }
 
 func (app *App) SetDao(dao *dao.Dao) {

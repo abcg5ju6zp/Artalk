@@ -2,27 +2,23 @@ package handler
 
 import (
 	"github.com/artalkjs/artalk/v2/internal/core"
-	"github.com/artalkjs/artalk/v2/internal/entity"
-	"github.com/artalkjs/artalk/v2/internal/i18n"
-	"github.com/artalkjs/artalk/v2/internal/log"
 	"github.com/artalkjs/artalk/v2/server/common"
 	"github.com/gofiber/fiber/v2"
 )
 
 type ParamsPageFetchAll struct {
-	SiteName string `json:"site_name" validate:"optional"` // If not empty, only fetch pages of this site
+	SiteName string `json:"site_name" query:"site_name" validate:"optional"` // If not empty, only fetch pages of this site
 }
 
 // @Id           FetchAllPages
 // @Summary      Fetch All Pages Data
-// @Description  Fetch the data of all pages
+// @Description  Fetch the data of all pages; a batch is persisted as a resumable job
 // @Tags         Page
 // @Security     ApiKeyAuth
 // @Param        options  body  ParamsPageFetchAll  true  "The options"
 // @Accept       json
 // @Produce      json
-// @Success      200  {object}  Map{}
-// @Failure      400  {object}  Map{msg=string}
+// @Success      200  {object}  ResponsePageFetchJob
 // @Failure      500  {object}  Map{msg=string}
 // @Router       /pages/fetch  [post]
 func PageFetchAll(app *core.App, router fiber.Router) {
@@ -32,34 +28,17 @@ func PageFetchAll(app *core.App, router fiber.Router) {
 			return resp
 		}
 
-		// If the task is in progress
-		if allPageFetching {
-			return common.RespError(c, 400, i18n.T("Task in progress, please wait a moment"))
+		// Start a persisted job; a concurrent start of the same scope
+		// returns the job that is already executing.
+		job, err := app.PageFetch().Start(p.SiteName)
+		if err != nil {
+			return common.RespError(c, 500, err.Error())
 		}
 
-		// Start the async task
-		go func() {
-			allPageFetching = true
-			allPageFetchDone = 0
-			allPageFetchTotal = 0
-			var pages []entity.Page
-			db := app.Dao().DB().Model(&entity.Page{})
-			if p.SiteName != "" {
-				db = db.Where(&entity.Page{SiteName: p.SiteName})
-			}
-			db.Find(&pages)
-
-			allPageFetchTotal = len(pages)
-			for _, p := range pages {
-				if err := app.Dao().FetchPageFromURL(&p); err != nil {
-					log.Error(c, "[api_admin_page_fetch] page fetch error: "+err.Error())
-				} else {
-					allPageFetchDone++
-				}
-			}
-			allPageFetching = false
-		}()
-
-		return common.RespSuccess(c)
+		_, items, err := app.PageFetch().Get(job.ID, false)
+		if err != nil {
+			return common.RespError(c, 500, err.Error())
+		}
+		return common.RespData(c, buildJobResponse(app.PageFetch(), job, items))
 	}))
 }
